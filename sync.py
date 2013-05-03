@@ -145,7 +145,7 @@ class SyncAction(object):
             else:
                 template_args = {'commit': commits[-1]}
                 print TOO_MANY_COMMITS_AFTER_CONTINUE % template_args
-                self.state = FINISHED
+                self.state = self.FINISHED
         self.advance()
 
     def check_new_sync(self):
