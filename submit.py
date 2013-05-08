@@ -144,7 +144,7 @@ class SubmitAction(object):
         FINISHED. In either case, advances the state machine.
         """
         success, rietveld_info = utils.update_rietveld_metadata_from_issue(
-                rietveld_info=self.__rietvield_info)
+                rietveld_info=self.__rietveld_info)
         if success:
             # TODO(dhermes): This assumes rietveld_info.review_info is not None.
             self.__description = rietveld_info.review_info.description

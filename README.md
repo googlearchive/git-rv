@@ -137,6 +137,20 @@ For more details on the other commands, simply execute `git-rv --help` or
 Feel free to file new issues and feature request, comment on existing ones
 and fork this repository to your heart's content.
 
+If you are working on changes to `git-rv`, you will need to be able to run
+`make_executable.py` to create a new `git-rv` binary based on your working
+copy of the repository.
+
+In order to do this you'll need to initialize the Rietveld `git` submodule.
+Since Rietveld is a [Mercurial][mercurial] project, we use
+[`git-remote-hg`][git-remote-hg] to include it as a `git` submodule. To
+pull it, run
+
+    $ # If you don't have git-remote-hg installed
+    $ sudo pip install --upgrade git-remote-hg
+    $ git submodule update --init
 
 [rietveld]: https://code.google.com/p/rietveld/
 [codereview]: https://codereview.appspot.com
+[mercurial]: http://mercurial.selenic.com/
+[git-remote-hg]: https://github.com/rfk/git-remote-hg

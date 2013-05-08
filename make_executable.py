@@ -14,8 +14,6 @@
 
 """Script to create git-rv binary from required modules."""
 
-import contextlib
-import httplib
 import os
 import subprocess
 import sys
@@ -23,53 +21,76 @@ import tempfile
 import zipfile
 
 
-SERVER = 'rietveld.googlecode.com'
-UPLOAD_PY = '/hg/upload.py'
-UPLOAD_FAIL = 'Retrieving upload.py failed with status %d.'
+UPLOAD_PY_PATH = ('rietveld', 'upload')
+UPLOAD_FAIL = """\
+The upload.py file was not in it's expected place.
+
+Please install git-remote-hg, then run
+
+    git submodule update --init
+
+and try again.
+"""
 # TODO(dhermes): Do this in pure Python.
 ADD_SHEBANG = 'echo \'#!/usr/bin/env python\' | cat - git-rv > %s'
 COMPILE_ARGS = ['python', '-O', '-m', 'compileall']
-MODULES = ['__main__', 'export', 'getinfo', 'git_rv', 'mv_branch', 'rm_branch',
-           'submit', 'sync', 'upload', 'utils']
+MODULE_MAPPING = {
+    '__main__': '__main__',
+    'export': 'export',
+    'getinfo': 'getinfo',
+    'git_rv': 'git_rv',
+    'mv_branch': 'mv_branch',
+    'rm_branch': 'rm_branch',
+    'submit': 'submit',
+    'sync': 'sync',
+    'utils': 'utils',
+    UPLOAD_PY_PATH: 'upload',
+}
 
 
-def get_upload_py():
-    # Too bad https://code.google.com/p/rietveld/ is a mercurial project
-    # and we can't just include as a git submodule
-    with contextlib.closing(httplib.HTTPConnection(SERVER)) as connection:
-      connection.request('GET', UPLOAD_PY)
+def get_project_root():
+    return subprocess.check_output(
+        ['git', 'rev-parse', '--show-toplevel']).strip()
 
-      print 'Retrieving upload.py from %s.' % (UPLOAD_PY,)
-      response = connection.getresponse()
-      if response.status != 200:
-          print UPLOAD_FAIL % (response.status,)
-          sys.exit(1)
 
-      payload = response.read()
+def get_full_path(module, project_root=None):
+    if isinstance(module, tuple):
+        module = os.path.join(*module)
+    if project_root is not None:
+        module = os.path.join(project_root, module)
+    return module + '.py'
 
-    return payload
+
+def check_upload_py_exists(project_root):
+    full_path = get_full_path(UPLOAD_PY_PATH, project_root)
+    if not os.path.isfile(full_path):
+        print UPLOAD_FAIL
+        sys.exit(1)
 
 
 def create_zipfile():
-    # Get freshest copy of upload.py from Rietveld
-    upload_contents = get_upload_py()
-    with open('upload.py', 'w') as fh:
-        print 'Updating local upload.py contents.'
-        fh.write(upload_contents)
+    project_root = get_project_root()
 
     # Make Zip
     with zipfile.ZipFile('git-rv', 'w') as git_rv_zip:
-        for module in MODULES:
-            # Compile the module
-            compile_args = COMPILE_ARGS + ['%s.py' % (module,)]
-            subprocess.call(compile_args)
-            print 'Compiling %(mod)s.py to %(mod)s.pyo.' % {'mod': module}
-            print 'Writing %s.pyo to git-rv executable.' % (module,)
-            git_rv_zip.write('%s.pyo' % (module,))
+        # First make sure the submodule is loaded
+        check_upload_py_exists(project_root)
 
-            # Delete the compiled .pyo file
-            print 'Deleting %s.pyo.' % (module,)
-            os.remove('%s.pyo' % (module,))
+        for source_module, target_module in MODULE_MAPPING.iteritems():
+            source_path = get_full_path(source_module, project_root)
+            # .pyo instead of .py, also, don't use project_root since
+            # will be relative paths in git-rv zipfile
+            target_path = get_full_path(target_module) + 'o'
+
+            # Compile the module
+            compile_args = COMPILE_ARGS + [source_path]
+            subprocess.call(compile_args)
+            print 'Writing %s to git-rv executable.' % (target_path,)
+            compiled_source_path = source_path + 'o'
+            git_rv_zip.write(compiled_source_path, arcname=target_path)
+
+            print 'Deleting %s.' % (compiled_source_path,)
+            os.remove(compiled_source_path)
 
     tmp = tempfile.mktemp()
     os.system(ADD_SHEBANG % (tmp,))

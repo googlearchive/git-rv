@@ -1,0 +1,3 @@
+[submodule "rietveld"]
+	path = rietveld
+	url = hg::https://code.google.com/p/rietveld/
