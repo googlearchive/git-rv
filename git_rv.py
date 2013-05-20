@@ -63,11 +63,17 @@ def _get_add_argument_keyword_arguments(option):
         A dictionary containing the keyword arguments to be passed to
             add_argument.
     """
-    result = {
-        'choices': option.choices,
-        'dest': option.dest,
-        'metavar': option.metavar,
-    }
+    result = {'dest': option.dest}
+
+    if option.choices is not None:
+        result['choices'] = option.choices
+
+    if option.metavar is not None:
+        result['metavar'] = option.metavar
+
+    if option.action == 'callback':
+        raise ValueError('Callback is not a supported action in argparse.')
+    result['action'] = option.action
 
     # const can only be used if nargs is '?'
     nargs = option.nargs
@@ -75,8 +81,10 @@ def _get_add_argument_keyword_arguments(option):
         if nargs not in (None, '?'):
             raise ValueError('')
         nargs = '?'
-    result['const'] = option.const
-    result['nargs'] = nargs
+
+        result['const'] = option.const
+        if option.action != 'store_const':
+            result['nargs'] = nargs
 
     # argparse has no concept of default None vs. no default provided
     default = option.default
@@ -88,7 +96,14 @@ def _get_add_argument_keyword_arguments(option):
     result['help'] = option.help.replace('%default', '%(default)s')
 
     # optparse uses strings for type while argparse uses the actual types
-    result['type'] = STRING_TO_TYPE_MAP[option.type]
+    try:
+        type_arg = STRING_TO_TYPE_MAP[option.type]
+    except KeyError:
+        print 'Unexpected parser argument type: %s.' % (option.type,)
+        sys.exit(1)
+
+    if type_arg is not None:
+        result['type'] = type_arg
 
     return result
 
