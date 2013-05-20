@@ -217,6 +217,9 @@ class ExportAction(object):
         # VCS is always git
         command_args.append(utils.VCS_ARG)
 
+        # Auth method is always OAuth 2.0 and never use cookies
+        command_args.extend(utils.OAUTH2_ARGS)
+
         # Send mail unless explicitly told not to
         if not self.__no_send_mail:
             command_args.append(utils.SEND_MAIL_ARG)

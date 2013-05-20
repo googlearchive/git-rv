@@ -47,6 +47,7 @@ SYNC = 'sync'
 
 # Constants uses in upload.py
 CODE_REVIEW = 'codereview.appspot.com'
+OAUTH2_ARGS = ('--oauth2', '--no_cookies')
 REVISION_TEMPLATE = '--rev=%s'
 SEND_MAIL_ARG = '--send_mail'
 VCS_ARG = '--vcs=git'

@@ -41,9 +41,9 @@ class SubmitAction(object):
             with the code review.
         __server: String; the server used for review of the issue in the current
             branch.
-        __rpc_server_args: A list of server, email, host, save_cookies and
-            account_type from the parsed command line arguments. This is passed
-            to GetRpcServer when using it to sign in a user to close an issue.
+        __rpc_server_args: A dictionary of arguments parsed from the command
+            line that will be passed to GetRpcServer when using it to sign in a
+            user to close and comment on an issue.
         __do_close: Boolean; Represents whether the issue should be closed
             after pushing the commit.
         __rietveld_info: RietveldInfo object associated with the current branch.
@@ -90,8 +90,9 @@ class SubmitAction(object):
         self.__issue = self.__rietveld_info.review_info.issue
 
         self.__server = self.__rietveld_info.server
-        rpc_server_args.insert(0, self.__server)
         self.__rpc_server_args = rpc_server_args
+        # Add the server
+        self.__rpc_server_args['server'] = self.__server
         self.__do_close = do_close
 
         # TODO(dhermes): These assume rietveld_info.remote_info is not None.
@@ -116,8 +117,14 @@ class SubmitAction(object):
             An instance of SubmitAction. Just by instantiating the instance, the
                 state machine will begin working.
         """
-        rpc_server_args = [args.email, args.host, args.save_cookies,
-                           args.account_type]
+        rpc_server_args = {
+            'host_override': args.host,
+            'save_cookies': False,
+            'account_type': args.account_type,
+            'use_oauth2': True,
+            'oauth2_port': args.oauth2_port,
+            'open_oauth2_local_webbrowser': args.open_oauth2_local_webbrowser,
+        }
         return cls(rpc_server_args=rpc_server_args, do_close=args.do_close)
 
     def verify_approval(self):
@@ -303,7 +310,7 @@ class SubmitAction(object):
                 upload.HttpRpcServer instance and xsrf_token is a string used to
                 make API requests to the Rietveld server.
         """
-        rpc_server = GetRpcServer(*self.__rpc_server_args)
+        rpc_server = GetRpcServer(**self.__rpc_server_args)
         if not rpc_server.authenticated:
             rpc_server._Authenticate()
         try:
