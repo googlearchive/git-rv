@@ -50,6 +50,15 @@ class ExportAction(object):
     UPDATING_METADATA = 3
     FINISHED = 4
 
+    @property
+    def rietveld_info(self):
+        """Simple accessor for stored RietveldInfo on Export.
+
+        This is intended to be used by other actions (such as sync) that might
+        need to access the RietveldInfo after an ExportAction completes.
+        """
+        return self.__rietveld_info
+
     # TODO(dhermes): Make sure things can be re-wound?
     #                Final vs. in-progress in metadata.
     def __init__(self, current_branch, args, current_message=None,
@@ -124,11 +133,9 @@ class ExportAction(object):
             return current_message
 
         if self.__rietveld_info.review_info is None:
-            # REMOTE_INFO always populated in callback()
-            remote_info = self.__rietveld_info.remote_info
-            remote_branch = '%s/%s' % (remote_info.remote, remote_info.branch)
-            # TODO(dhermes): Consider saving __remote_commit_hash on instance
-            last_commit = remote_info.commit_hash
+            # RemoteInfo always populated in callback()
+            remote_branch = self.__rietveld_info.remote_info.remote_branch_ref
+            last_commit = self.__rietveld_info.remote_info.commit_hash
         else:
             remote_branch = None
             last_commit = self.__rietveld_info.review_info.last_commit

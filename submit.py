@@ -277,12 +277,13 @@ class SubmitAction(object):
             utils.capture_command('git', 'branch', '-D', self.__branch,
                                   single_line=False)
             # TODO(dhermes): The git push will update the locally stored
-            #                version of the remote. Is this enough to gaurantee
+            #                version of the remote. Is this enough to guarantee
             #                we are doing the right thing here?
             # Add back the review branch with HEAD at the new commit
-            branch_with_remote = '%s/%s' % (self.__remote, self.__remote_branch)
-            utils.capture_command('git', 'branch', '--track', self.__branch,
-                                  branch_with_remote, single_line=False)
+            utils.capture_command(
+                    'git', 'branch', '--track', self.__branch,
+                    self.__rietveld_info.remote_info.remote_branch_ref,
+                    single_line=False)
 
             # Remove Rietveld metadata associated with the review branch
             utils.RietveldInfo.remove(branch_name=self.__branch)

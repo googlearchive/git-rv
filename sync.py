@@ -50,7 +50,8 @@ class SyncAction(object):
         __sync_halted: Boolean indicating whether a previous sync was halted in
             this review branch.
         __last_synced: String containing the hash of the last remote commit
-            that was synced with this review. Added by fetch_remote method.
+            that was synced with this review. Added by fetch_remote method when
+            doing a new sync and by check_continue method when resuming a sync.
     """
 
     STARTING = 0
@@ -139,9 +140,12 @@ class SyncAction(object):
             commits = utils.get_commits(self.__last_commit, 'HEAD')
             if len(commits) == 0:
                 print 'Please make a commit after resolving the merge conflict.'
-                self.state = FINISHED
+                self.state = self.FINISHED
             elif len(commits) == 1:
-                self.state = EXPORT
+                remote_info = self.__rietveld_info.remote_info
+                # This must be set for export_to_review to work.
+                self.__last_synced = remote_info.head_in_remote_branch
+                self.state = self.EXPORT
             else:
                 template_args = {'commit': commits[-1]}
                 print TOO_MANY_COMMITS_AFTER_CONTINUE % template_args
@@ -177,15 +181,13 @@ class SyncAction(object):
         otherwise sets state to MERGE_REMOTE_IN.
         """
         # TODO(dhermes): This assumes remote_info is not None. Fix this.
-        remote = self.__rietveld_info.remote_info.remote
-        print utils.capture_command('git', 'fetch', remote, single_line=False)
+        remote_info = self.__rietveld_info.remote_info
+        print utils.capture_command('git', 'fetch', remote_info.remote,
+                                    single_line=False)
 
-        remote_branch = self.__rietveld_info.remote_info.branch
-        remote_branch_ref = '%s/%s' % (remote, remote_branch)
-
-        new_head_in_remote = utils.get_head_commit(remote_branch_ref)
+        new_head_in_remote = remote_info.head_in_remote_branch
         if new_head_in_remote == self.__rietveld_info.remote_info.last_synced:
-            print 'No new changes in %s.' % (remote_branch_ref,)
+            print 'No new changes in %s.' % (remote_info.remote_branch_ref,)
             self.state = self.FINISHED
         else:
             self.state = self.MERGE_REMOTE_IN
@@ -249,7 +251,12 @@ class SyncAction(object):
                 server=self.__rietveld_info.server,
                 private=self.__rietveld_info.private,
                 cc=None, host=None, reviewers=None)
-        ExportAction(self.__branch, fake_namespace, argv=['export'])
+        # This will fully run the ExportAction since the state machine calls
+        # self.advance() in the constructor.
+        action = ExportAction(self.__branch, fake_namespace, argv=['export'])
+        # Need to update the newly changed RietveldInfo in case clean_up has
+        # to call remove_key using the currently set RietveldInfo.
+        self.__rietveld_info = action.rietveld_info
         self.state = self.CLEAN_UP
         self.advance()
 

@@ -895,6 +895,16 @@ class RemoteInfo(_UpdateInfoBase):
         if self.url is not None:
             return RepositoryInfo.from_remote(self.url)
 
+    @property
+    def remote_branch_ref(self):
+        """Property holding the full reference to the remote branch."""
+        return '%s/%s' % (self.remote, self.branch)
+
+    @property
+    def head_in_remote_branch(self):
+        """The SHA1 hash of the HEAD commit in the remote branch."""
+        return get_head_commit(self.remote_branch_ref)
+
 
 class ReviewInfo(_UpdateInfoBase):
     """Simple container class for review info.
