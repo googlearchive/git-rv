@@ -54,18 +54,22 @@ class SubmitAction(object):
         __last_synced: String containing the commit hash in the remote branch
             that the current review was last synced with.
         __review_branch: String; the name of the dummy branch created to push
-            changes.
+            changes. This value is set as None in the constructor and will only
+            be set if a review branch is successfully created.
     """
 
-    STARTING = 0
-    UPDATE_FROM_METADATA = 1
-    SQUASHING = 2
-    CREATING_BRANCH = 3
-    PUSHING = 4
-    NOTIFY = 5
-    CLEAN_UP_LOCAL = 6
-    CLEAN_UP_REVIEW = 7
-    FINISHED = 8
+    CHECK_ENVIRONMENT = 0
+    VERIFY_APPROVAL = 1
+    UPDATE_FROM_METADATA = 2
+    ENTER_DETACHED_STATE = 3
+    SET_HISTORY_FROM_REMOTE = 4
+    CREATE_BRANCH = 5
+    COMMIT = 6
+    PUSHING = 7
+    NOTIFY_FAILURE = 8
+    CLEAN_UP_LOCAL = 9
+    CLEAN_UP_REVIEW = 10
+    FINISHED = 11
 
     def __init__(self, rpc_server_args, do_close=True):
         """Constructor for SubmitAction.
@@ -81,6 +85,7 @@ class SubmitAction(object):
         branch.
         """
         self.__branch = utils.get_current_branch()
+        self.__review_branch = None
 
         self.__rietveld_info = utils.RietveldInfo.from_branch(
                 branch_name=self.__branch)
@@ -100,7 +105,7 @@ class SubmitAction(object):
         self.__remote_branch = self.__rietveld_info.remote_info.branch
         self.__last_synced = self.__rietveld_info.remote_info.last_synced
 
-        self.state = self.STARTING
+        self.state = self.CHECK_ENVIRONMENT
         self.advance()
 
     @classmethod
@@ -127,6 +132,25 @@ class SubmitAction(object):
         }
         return cls(rpc_server_args=rpc_server_args, do_close=args.do_close)
 
+    # TODO(dhermes): There is a very similar method in sync. Be sure to
+    #                consolidate these when improving the state machine.
+    def check_environment(self):
+        """Checks that the current review branch is in a clean state.
+
+        If not, we can't submit, so sets state to FINISHED after notifying the
+        user of the issue. If it can be, sets state to VERIFY_APPROVAL. In
+        either case, advances the state machine.
+        """
+        # Make sure branch is clean
+        if not utils.in_clean_state():
+            print 'Branch %r not in clean state:' % (self.__branch,)
+            print utils.capture_command('git', 'diff', single_line=False)
+            self.state = self.FINISHED
+        else:
+            self.state = self.VERIFY_APPROVAL
+
+        self.advance()
+
     def verify_approval(self):
         """Verifies that the current issue has been approved in review.
 
@@ -147,7 +171,7 @@ class SubmitAction(object):
     def update_from_metadata(self):
         """Updates Rietveld info with metadata from code review server.
 
-        If successful, sets state to CREATING_BRANCH, otherwise sets to
+        If successful, sets state to ENTER_DETACHED_STATE, otherwise sets to
         FINISHED. In either case, advances the state machine.
         """
         success, rietveld_info = utils.update_rietveld_metadata_from_issue(
@@ -155,58 +179,147 @@ class SubmitAction(object):
         if success:
             # TODO(dhermes): This assumes rietveld_info.review_info is not None.
             self.__description = rietveld_info.review_info.description
-            self.state = self.CREATING_BRANCH
+            self.state = self.ENTER_DETACHED_STATE
         else:
             # TODO(dhermes): Make this a constant.
             print 'Metadata update from code server failed.'
             self.state = self.FINISHED
         self.advance()
 
-    def create_branch(self):
-        """Creates a dummy branch to commit the reviewed changes to and push.
+    def enter_detached_state(self):
+        """Enters detached HEAD state with review contents.
 
-        If successful, sets state to SQUASHING and advances the state machine.
+        Enters a detached HEAD state holding the contents of the review branch,
+        but none of the history. This is so we can rewrite the history to apply
+        the reviewed work to the existing history of the remote branch.
+
+        Thanks to http://stackoverflow.com/a/4481621/1068170 for the merge
+        strategy.
+
+        If successful, sets state to SET_HISTORY_FROM_REMOTE; if not, saves the
+        error message and sets state to NOTIFY_FAILURE. In either case, advances
+        the state machine.
         """
-        branch_name = BRANCH_NAME_TEMPLATE % self.__issue
-        while utils.branch_exists(branch_name):
-            branch_name += '_0'
+        # Dictionary to pass along state to advance()
+        next_state_kwargs = {}
 
-        utils.capture_command('git', 'branch', '--no-track', branch_name,
-                              self.__last_synced, single_line=False)
-        self.__review_branch = branch_name
-        self.state = self.SQUASHING
-        self.advance()
+        # Enter detached HEAD state
+        print 'Entering detached HEAD state with contents from %s.' % (
+                self.__branch,)
+        current_branch_detached = '%s@{0}' % (self.__branch,)
+        result, _, stderr = utils.capture_command(
+                'git', 'checkout', current_branch_detached,
+                expect_success=False)
+
+        if result != 0:
+            next_state_kwargs['error_message'] = stderr
+            self.state = self.NOTIFY_FAILURE
+        else:
+            self.state = self.SET_HISTORY_FROM_REMOTE
+
+        self.advance(**next_state_kwargs)
+
+    def set_history_from_remote(self):
+        """Sets history in detached HEAD to the remote history.
+
+        Uses a soft reset to add the commit history from the last synced commit
+        in the remote branch.
+
+        Thanks to http://stackoverflow.com/a/4481621/1068170 for the merge
+        strategy.
+
+        If successful, sets state to CREATE_BRANCH; if not, saves the error
+        message and sets state to NOTIFY_FAILURE. In either case, advances the
+        state machine.
+        """
+        # Dictionary to pass along state to advance()
+        next_state_kwargs = {}
+
+        # Soft reset to add remote branch commit history
+        print 'Setting head at %s.' % (self.__last_synced,)
+        result, _, stderr = utils.capture_command(
+                'git', 'reset', '--soft', self.__last_synced,
+                expect_success=False)
+
+        if result != 0:
+            next_state_kwargs['error_message'] = stderr
+            self.state = self.NOTIFY_FAILURE
+        else:
+            self.state = self.CREATE_BRANCH
+
+        self.advance(**next_state_kwargs)
+
+    def create_branch(self):
+        """Creates dummy branch with contents from detached HEAD.
+
+        - Finds a dummy name by using BRANCH_NAME_TEMPLATE and the current issue
+          and then adding '_0' until it finds a branch name which doesn't
+          already exist.
+        - Creates and checks out (via checkout -b) the contents using the dummy
+          name.
+
+        Thanks to http://stackoverflow.com/a/4481621/1068170 for the merge
+        strategy.
+
+        If successful, sets state to COMMIT; if not, saves the error message and
+        state to NOTIFY_FAILURE. In either case, advances the state machine.
+        """
+        # Find dummy branch name
+        review_branch = BRANCH_NAME_TEMPLATE % self.__issue
+        while utils.branch_exists(review_branch):
+            review_branch += '_0'
+
+        # Dictionary to pass along state to advance()
+        next_state_kwargs = {}
+
+        # Create and checkout review branch
+        print 'Checking out %s at %s.' % (review_branch, self.__last_synced)
+        result, _, stderr = utils.capture_command(
+                'git', 'checkout', '-b', review_branch,
+                expect_success=False)
+
+        if result != 0:
+            next_state_kwargs['error_message'] = stderr
+            self.state = self.NOTIFY_FAILURE
+        else:
+            # Only set the review branch if it is created.
+            self.__review_branch = review_branch
+            self.state = self.COMMIT
+
+        self.advance(**next_state_kwargs)
 
     def commit(self):
-        """Turns the reviewed commits into a single commit.
+        """Adds reviewed changes to stable contents in dummy branch.
 
-        Uses --squash to combine all the reviewed patches/commits into a single
-        commit. Uses the issue description (from the review) and a note about
-        the review.
+        Commits the current content as a single commit (extra) in this
+        remote branch history (but in the local branch). Uses the issue
+        description (from the review) and adds a note about the review.
 
-        If successful, sets state to PUSHING and advances the state machine.
+        If successful, sets state to PUSHING; if not, saves the error message
+        and state to NOTIFY_FAILURE. In either case, advances the state machine.
         """
-        print 'Checking out %s/%s at %s.' % (self.__remote,
-                                             self.__review_branch,
-                                             self.__last_synced)
-        utils.capture_command('git', 'checkout', self.__review_branch,
-                              single_line=False)
+        # Dictionary to pass along state to advance()
+        next_state_kwargs = {}
 
-        print 'Adding reviewed commits.'
-        # http://365git.tumblr.com/post/4364212086/git-merge-squash
-        utils.capture_command('git', 'merge', '--squash', self.__branch,
-                              single_line=False)
-
+        # Commit the current content
         final_commit_message = utils.SQUASH_COMMIT_TEMPLATE % {
             utils.ISSUE_DESCRIPTION: self.__description,
             utils.ISSUE: self.__issue,
             utils.SERVER: self.__server,
         }
-        print 'Adding commit:\n', final_commit_message
-        utils.capture_command('git', 'commit', '-m', final_commit_message,
-                              single_line=False)
-        self.state = self.PUSHING
-        self.advance()
+        print 'Adding commit:'
+        print final_commit_message
+        result, _, stderr = utils.capture_command(
+                'git', 'commit', '-m', final_commit_message,
+                expect_success=False)
+        if result != 0:
+            next_state_kwargs['error_message'] = stderr
+            self.state = self.NOTIFY_FAILURE
+        else:
+            self.state = self.PUSHING
+
+        # Advance
+        self.advance(**next_state_kwargs)
 
     def push_commit(self):
         """Pushes the squashed commit to the remote repository.
@@ -214,21 +327,24 @@ class SubmitAction(object):
         If the push fails, saves the error message so it can be used to
         notify the user.
 
-        If successful, sets state to CLEAN_UP_LOCAL, otherwise to NOTIFY. In
-        either case, advances the state machine.
+        If successful, sets state to CLEAN_UP_LOCAL, otherwise to
+        NOTIFY_FAILURE. In either case, advances the state machine.
         """
+        # Dictionary to pass along state to advance()
+        next_state_kwargs = {}
+
         branch_mapping = '%s:%s' % (self.__review_branch, self.__remote_branch)
         result, _, stderr = utils.capture_command(
                 'git', 'push', self.__remote, branch_mapping,
                 expect_success=False)
-        next_state_kwargs = {}
         if result != 0:
             # TODO(dhermes): Should we try a sync and proceed if no failure?
             next_state_kwargs['error_message'] = stderr
-            self.state = self.NOTIFY
+            self.state = self.NOTIFY_FAILURE
         else:
             next_state_kwargs['success'] = True
             self.state = self.CLEAN_UP_LOCAL
+
         self.advance(**next_state_kwargs)
 
     def notify_failure(self, error_message):
@@ -288,12 +404,23 @@ class SubmitAction(object):
             # Remove Rietveld metadata associated with the review branch
             utils.RietveldInfo.remove(branch_name=self.__branch)
 
-        # Check out the review branch
-        utils.capture_command('git', 'checkout', self.__branch,
+        # Check out the review branch. We use -f in case we failed in a detached
+        # HEAD or dirty state and want to get back to our clean branch.
+        utils.capture_command('git', 'checkout', '-f', self.__branch,
                               single_line=False)
-        # Delete the dummy branch created by this action
-        utils.capture_command('git', 'branch', '-D', self.__review_branch,
+
+        # This brings the review branch back to a stable state, which it was
+        # required to be in by check_environment(). If there are no pending
+        # changes left over from the checkout -f, this hard reset does nothing.
+        utils.capture_command('git', 'reset', '--hard', 'HEAD',
                               single_line=False)
+
+        # If __review_branch was set, we know we have a dummy branch created
+        # by this action which must be deleted.
+        if self.__review_branch is not None:
+            utils.capture_command('git', 'branch', '-D', self.__review_branch,
+                                  single_line=False)
+
         if success:
             self.state = self.CLEAN_UP_REVIEW
         else:
@@ -420,17 +547,23 @@ class SubmitAction(object):
             GitRvException: If this method is called and the state is not one
                 of the valid states.
         """
-        if self.state == self.STARTING:
+        if self.state == self.CHECK_ENVIRONMENT:
+            self.check_environment(*args, **kwargs)
+        elif self.state == self.VERIFY_APPROVAL:
             self.verify_approval(*args, **kwargs)
         elif self.state == self.UPDATE_FROM_METADATA:
             self.update_from_metadata(*args, **kwargs)
-        elif self.state == self.CREATING_BRANCH:
+        elif self.state == self.ENTER_DETACHED_STATE:
+            self.enter_detached_state(*args, **kwargs)
+        elif self.state == self.SET_HISTORY_FROM_REMOTE:
+            self.set_history_from_remote(*args, **kwargs)
+        elif self.state == self.CREATE_BRANCH:
             self.create_branch(*args, **kwargs)
-        elif self.state == self.SQUASHING:
+        elif self.state == self.COMMIT:
             self.commit(*args, **kwargs)
         elif self.state == self.PUSHING:
             self.push_commit(*args, **kwargs)
-        elif self.state == self.NOTIFY:
+        elif self.state == self.NOTIFY_FAILURE:
             self.notify_failure(*args, **kwargs)
         elif self.state == self.CLEAN_UP_LOCAL:
             self.clean_up_local(*args, **kwargs)
