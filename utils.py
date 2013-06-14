@@ -33,6 +33,7 @@ try:
     import json
 except ImportError:
     import simplejson as json
+import os
 import re
 import subprocess
 import urllib
@@ -108,6 +109,11 @@ FAILED_PUBLISH_TEMPLATE = ('Adding link to commit for issue %(issue)d failed.\n'
                            'message:\n\n%(message)s')
 GOOGLE_CODEHOSTING_BAD_URI_TEMPLATE = ('Project names in URIs can contain at '
                                        'most one \'.\'. Found: %s.')
+GOOGLE_CODEHOSTING_HG_BAD_REMOTE_TEMPLATE = (
+        'git-remote-hg repository URI not formed correctly. Expected to start '
+        'with hg::. Found: %s.')
+GOOGLE_CODEHOSTING_HG_NO_MAPPING_TEMPLATE = ('git commit hash %s not in commit '
+                                             'mapping.')
 INVALID_BRANCH_CHOICE = 'Branch choice %r is invalid.'
 INVALID_MESSAGE_CHOICE = 'Message choice %r is invalid.'
 INVALID_REMOTE_CHOICE = 'Remote choice %r is invalid.'
@@ -221,6 +227,15 @@ def get_current_branch():
         String containing the current branch name, if in a branch.
     """
     return capture_command('git', 'rev-parse', '--abbrev-ref', 'HEAD')
+
+
+def get_git_root():
+    """Retrieves the current root of the git repository.
+
+    Returns:
+        String containing the current git root, if in a repository.
+    """
+    return capture_command('git', 'rev-parse', '--show-toplevel')
 
 
 def get_head_commit(current_branch=None):
@@ -772,6 +787,95 @@ class GoogleCodehostingRepositoryInfo(RepositoryInfo):
                 Google Code Hosting repositories match, otherwise None.
         """
         return cls.GOOGLE_CODEHOSTING_REGEX.match(value)
+
+
+class GoogleCodehostingHgRepositoryInfo(GoogleCodehostingRepositoryInfo):
+    """Repository info class for Google Code Hosting Mercurial repositories.
+
+    Matches URIs for HTTP or HTTPS protocols that begin with hg::, the custom
+    "protocol" used for git-remote-hg.
+    """
+
+    GOOGLE_CODEHOSTING_REGEX = re.compile('^hg::(http|https)://'
+                                          'code.google.com/p/'
+                                          '(?P<project>((?!/).)+)'
+                                          '/?$')
+    def __init__(self, remote_url, match):
+        """Constructor for GoogleCodehostingHgRepositoryInfo.
+
+        Overrides the default constructor to get access to the remote URL since
+        this is used to look up the git->hg commit mapping.
+
+        Args:
+            remote_url: String containing a remote URL for a repository.
+            match: A regex match corresponding to the match method for this
+                class.
+        """
+        super(GoogleCodehostingHgRepositoryInfo, self).__init__(
+                remote_url, match)
+        self.__add_mapfile_path(remote_url)
+
+    def __add_mapfile_path(self, remote_url):
+        """Adds mapfile path based on remote_url.
+
+        Makes sure the git-remote-hg remote is formed correctly and sets the
+        path based on the current git repository.
+
+        Sets mapfile_path on the current instance if succeeds.
+
+        Args:
+            remote_url: String containing a remote URL for a repository.
+
+        Raises:
+            GitRvException: if the remote URL doesn't start with hg::.
+        """
+        if not remote_url.startswith('hg::'):
+            raise GitRvException(
+                    GOOGLE_CODEHOSTING_HG_BAD_REMOTE_TEMPLATE % (remote_url,))
+
+        actual_uri = remote_url.split('hg::', 1)[1]
+        hgremote_directory = urllib.quote_plus(actual_uri)
+        project_root = get_git_root()
+        self.mapfile_path = os.path.join(
+                project_root, '.git', 'hgremotes',
+                hgremote_directory, '.hg', 'git-mapfile')
+
+    def __commit_mapping(self):
+        """Dictionary mapping git commits to Mercurial commits.
+
+        Returns:
+          A dictionary mapping SHA1 git commit strings to SHA1 Mercurial commit
+              strings. This mapping is created by git-remote-hg and stored in
+              the file at mapfile_path.
+        """
+        with open(self.mapfile_path, 'rU') as fh:
+            content = fh.read().rstrip()
+        return dict(row.split(' ', 1) for row in content.split('\n'))
+
+    def commit_link(self, commit_hash):
+        """Creates a commit link for a commit in the current repository.
+
+        Converts the local git commit to the corresponding hg commit, which is
+        what was actually pushed.
+
+        Args:
+            commit_hash: String; the hash of the git commit we wish to link to.
+
+        Returns:
+            URI linking to the hg commit specific to the current project.
+
+        Raises:
+            GitRvException: If the commit hash is not containing in commit
+                mapping.
+        """
+        commit_mapping = self.__commit_mapping()
+        if commit_hash not in commit_mapping:
+            msg = GOOGLE_CODEHOSTING_HG_NO_MAPPING_TEMPLATE % (commit_hash,)
+            raise GitRvException(msg)
+        hg_commit_hash = commit_mapping[commit_hash]
+
+        return super(GoogleCodehostingHgRepositoryInfo, self).commit_link(
+                hg_commit_hash)
 
 
 class GithubRepositoryInfo(RepositoryInfo):
