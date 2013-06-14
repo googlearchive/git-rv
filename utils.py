@@ -35,6 +35,7 @@ except ImportError:
     import simplejson as json
 import re
 import subprocess
+import urllib
 
 
 # Command names
@@ -105,6 +106,8 @@ FAILED_PUBLISH_TEMPLATE = ('Adding link to commit for issue %(issue)d failed.\n'
                            'To add it manually, visit '
                            'https://%(server)s/%(issue)d/publish and add this '
                            'message:\n\n%(message)s')
+GOOGLE_CODEHOSTING_BAD_URI_TEMPLATE = ('Project names in URIs can contain at '
+                                       'most one \'.\'. Found: %s.')
 INVALID_BRANCH_CHOICE = 'Branch choice %r is invalid.'
 INVALID_MESSAGE_CHOICE = 'Message choice %r is invalid.'
 INVALID_REMOTE_CHOICE = 'Remote choice %r is invalid.'
@@ -710,7 +713,7 @@ class GoogleCodehostingRepositoryInfo(RepositoryInfo):
                                           '(?P<project>((?!(\.git|/)).)+)'
                                           '(.git)?/?$')
     GOOGLE_CODEHOSTING_COMMIT_LINK_TEMPLATE = ('https://code.google.com/p/%s/'
-                                               'source/detail?r=%s')
+                                               'source/detail?%s')
 
     def populate_from_match(self, match):
         """Populate instance data from a match.
@@ -727,9 +730,19 @@ class GoogleCodehostingRepositoryInfo(RepositoryInfo):
             raise GitRvException('Expected match, received None.')
 
         try:
-            self.project = match.group('project')
+            project = match.group('project')
         except IndexError:
             raise GitRvException('Expected group not matched.')
+
+        repository = None
+        dot_count = project.count('.')
+        if dot_count == 1:
+            project, repository = project.split('.')
+        else if dot_count > 1:
+            raise GitRvException(
+                    GOOGLE_CODEHOSTING_BAD_URI_TEMPLATE % (project,))
+        self.project = project
+        self.repository = repository
 
     def commit_link(self, commit_hash):
         """Creates a commit link for a commit in the current repository.
@@ -740,8 +753,12 @@ class GoogleCodehostingRepositoryInfo(RepositoryInfo):
         Returns:
             URI linking to the commit specific to the current project.
         """
+        query_params = {'r': commit_hash}
+        if self.repository is not None:
+            query_params['repo'] = self.repository
+        query_string = urllib.urlencode(query_params)
         return self.GOOGLE_CODEHOSTING_COMMIT_LINK_TEMPLATE % (self.project,
-                                                               commit_hash)
+                                                               query_string)
 
     @classmethod
     def match(cls, value):
