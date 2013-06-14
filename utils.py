@@ -753,7 +753,7 @@ class GoogleCodehostingRepositoryInfo(RepositoryInfo):
         dot_count = project.count('.')
         if dot_count == 1:
             project, repository = project.split('.')
-        else if dot_count > 1:
+        elif dot_count > 1:
             raise GitRvException(
                     GOOGLE_CODEHOSTING_BAD_URI_TEMPLATE % (project,))
         self.project = project
