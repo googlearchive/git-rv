@@ -51,7 +51,7 @@ A typical review may look like the following:
         $ git add .
         $ git commit -m "Adding super cool feature X."
         ...
-        $ git rv export -r reviewer@email.com
+        $ git rv export -r reviewer@example.com
         Upload server: codereview.appspot.com (change with -s/--server)
         Loaded authentication cookies from {$HOME}/.codereview_upload_cookies
         Issue created. URL: http://codereview.appspot.com/{$ISSUE}
@@ -150,7 +150,39 @@ pull it, run
     $ sudo pip install --upgrade git-remote-hg
     $ git submodule update --init
 
+## Using `git-rv` for Mercurial repositories
+
+If you'd like to use `git-rv` to do code reviews for your [`hg`][mercurial]
+repositories, this is fully supported. In the same fashion we use
+[`git-remote-hg`][git-remote-hg] to support the Rietveld submodule, it can
+be used to work on an `hg` repository.
+
+For example, to work on [`google-api-python-client`][google-api-python-client],
+we check out the repository with `git` by appending a dummy protocol `hg::`
+
+```
+git clone hg::https://code.google.com/p/google-api-python-client/
+```
+
+(This looks similar to the protocols we're used
+to: `http:`, `https:` and `git:`.)
+
+After doing this, you can jump in right away and interact with the repository
+as if it were a `git` repository:
+
+```
+cd google-api-python-client
+emacs ... # Do some work
+git rv export -r reviewer@example.com
+```
+
+After the review is complete, you can submit via `git rv submit`. For Google
+Code Hosting reviews (and other Mercurial hosting sites to follow), after
+submitting, a link to the newly pushed commit will be added to the Rietveld
+review.
+
 [rietveld]: https://code.google.com/p/rietveld/
 [codereview]: https://codereview.appspot.com
 [mercurial]: http://mercurial.selenic.com/
 [git-remote-hg]: https://github.com/rfk/git-remote-hg
+[google-api-python-client]: https://code.google.com/p/google-api-python-client/
