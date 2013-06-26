@@ -1,9 +1,31 @@
-git-rv
-======
+`git-rv`
+========
 
 `git-rv` is a command line tool for syncing local git clients with code
 reviews hosted on a [Rietveld][rietveld] code review server such as
 [codereview.appspot.com][codereview].
+
+## `git-rv` Basics
+
+Using `git-rv`, you can create micro-commits locally, export them for
+review, and `git-rv` will create a single commit once your patch has
+been approved by your reviewers.
+
+When you begin your review, `git-rv` will track a specific
+`git` [remote][git-remote] and a branch in that remote. Once a remote branch
+has been tracked for a review, all [diffs][git-diff] sent for review will be
+relative to that remote branch. If that branch is updated by another commit
+during your review, you can bring your review branch up to date by running
+`git rv sync`.
+
+**NOTE**: If there are multiple remotes associated with your local `git`
+repository and/or multiple branches in the selected remote, the tool will
+prompt you to make a choice.
+
+To commit reviewed code, you'll never need to run `git push`;
+`git rv submit` will handle that for you. In this process, the tool combines
+your micro-commits into a single commit and makes sure it pushes your local
+code to the correct branch in the correct `git` remote.
 
 ## Installation
 
@@ -186,3 +208,5 @@ review.
 [mercurial]: http://mercurial.selenic.com/
 [git-remote-hg]: https://github.com/rfk/git-remote-hg
 [google-api-python-client]: https://code.google.com/p/google-api-python-client/
+[git-remote]: http://git-scm.com/book/en/Git-Branching-Remote-Branches
+[git-diff]: http://git-scm.com/docs/git-diff
