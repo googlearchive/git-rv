@@ -313,7 +313,8 @@ def user_choice_from_list(choices, pre_prompt_message, input_message,
             choice is invalid.
 
     Returns:
-        Integer index of the value chosen by the user.
+        Value chosen by the user. This can occur either if the user types the
+            value or the index of the value in the list.
 
     Raises:
         GitRvException: If there are no choices.
