@@ -37,8 +37,7 @@ import utils
 # optparse->argparse conversion constants
 EMAIL_OPTION = '-e'
 DISCARDED_UPLOAD_OPTIONS = ['file', 'email', 'help', utils.ISSUE, 'revision',
-                            'save_cookies', 'send_mail', 'title',
-                            'use_oauth2', 'vcs']
+                            'save_cookies', 'send_mail', 'use_oauth2', 'vcs']
 STRING_TO_TYPE_MAP = {
     'string': str,
     'int': int,

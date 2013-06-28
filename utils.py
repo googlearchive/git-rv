@@ -100,6 +100,7 @@ BAD_REMOTE_ERROR_TEMPLATE = (
         'the current branch %(branch)r.')
 BRANCH_REF_TEMPLATE = 'refs/heads/%s'
 COMMIT_HASH_REGEX = re.compile('^[0-9a-f]{40}$')
+DESCRIPTION_NEWLINE = 'description_newline'
 FAILED_CLOSE_TEMPLATE = ('Closing issue %(issue)d failed.\nTo close the issue '
                          'manually, visit https://%(server)s/%(issue)d/ and '
                          'click the X in the top left corner.')
@@ -127,7 +128,14 @@ MESSAGE_PROMPT_IN_REVIEW = ('You have made more than one commit since the last '
 MESSAGE_PROMPT_PRE_REVIEW_TEMPLATE = (
     'You have made more than one commit since HEAD in %s.\n'
     'Please choose one of the following as your commit message:')
+MISMATCHED_COMMIT_SUBJECT_TEMPLATE = """\
+Commit message:
+%r
+does not begin with the subject:
+%r."""
 NO_BRANCHES_ERROR_TEMPLATE = 'No branches found found for remote %r.'
+NO_COMMIT_TEMPLATE = ('No commits have been made since %s, can\'t '
+                      'get commit message.')
 NO_REMOTES_ERROR = 'No remotes found in the current repository.'
 REMOTE_BRANCH = 'remote_branch'
 REMOTE_URL_KEY_TEMPLATE = 'remote.%s.url'
@@ -137,8 +145,10 @@ REMOTE_CHOICE_PROMPT = 'Remote: '
 REMOTE_BRANCH_PROMPT = ('You have more than one branch associated with this '
                         'remote.\nPlease choose one of the following:')
 REMOTE_BRANCH_CHOICE_PROMPT = 'Branch: '
-SQUASH_COMMIT_TEMPLATE = ('%(description)s\n\nReviewed in '
+SQUASH_COMMIT_TEMPLATE = ('%(subject)s\n\n%(description)s'
+                          '%(description_newline)sReviewed in '
                           'https://%(server)s/%(issue)d/')
+SUBJECT_TOO_LONG_TEMPLATE = 'Commit subject %r exceeds 100 characters.'
 TIP_BEHIND_HINT = ('Updates were rejected because the tip of your current '
                    'branch is behind.')
 XSRF_TOKEN = 'xsrf_token'
@@ -278,8 +288,36 @@ def get_current_issue(current_branch=None):
     return rietveld_info.review_info.issue
 
 
-def get_commit_subject(commit_hash=None, current_branch=None):
+def get_commit_subject(commit_hash):
     """Gets the one-line subject of the commit.
+
+    Args:
+        commit_hash: String; the hash of the commit which has the subject we
+            wish to retrieve.
+
+    Returns:
+        String containing the subject (first line) of the commit.
+    """
+    return capture_command('git', 'log', '-s', '-1',
+                           '--pretty=%s', '-U', commit_hash)
+
+
+def get_commit_message(commit_hash):
+    """Gets full commit message.
+
+    Args:
+        commit_hash: String; the hash of the commit which has the subject we
+            wish to retrieve.
+
+    Returns:
+        String containing the full commit message.
+    """
+    return capture_command('git', 'log', '-s', '-1', '--pretty=format:%B',
+                           '-U', commit_hash, single_line=False)
+
+
+def get_commit_message_parts(commit_hash=None, current_branch=None):
+    """Gets commit message, split into subject and remaining description.
 
     Args:
         commit_hash: String; the hash of the commit which has the subject we
@@ -288,13 +326,39 @@ def get_commit_subject(commit_hash=None, current_branch=None):
             None and in this case is replaced by a call to get_current_branch.
 
     Returns:
-        String containing the subject (first line) of the commit.
+        Tuple of string containing the commit subject and remaining description
+            as strings.
+
+    Raises:
+        GitRvException: If the commit subject has more than 100 characters.
+        GitRvException: If the commit message does not begin with the commit
+            subject.
     """
     commit_hash = commit_hash or get_head_commit(current_branch=current_branch)
-    # TODO(dhermes): Consider using --pretty=format:%B or some other format.
-    #                www.kernel.org/pub/software/scm/git/docs/git-log.html
-    return capture_command('git', 'log', '-s', '-1',
-                           '--pretty=%s', '-U', commit_hash)
+
+    commit_subject = get_commit_subject(commit_hash)
+    if len(commit_subject) > 100:
+        raise GitRvException(SUBJECT_TOO_LONG_TEMPLATE % (commit_subject,))
+
+    commit_message = get_commit_message(commit_hash)
+    # This can occur if there is no newline between the subject and the
+    # description. For example, if the commit is
+    # """This commit does X.
+    # It also does Y.
+    #
+    # Particularly it relates to Z."""
+    # Then the subject would be
+    # "This commit does X. It also does Y."
+    # instead of the expected
+    # "This commit does X."
+    # and it would fail this test since the commit message starts with
+    # "This commit does X.\nIt also does Y."
+    if not commit_message.startswith(commit_subject):
+        raise GitRvException(MISMATCHED_COMMIT_SUBJECT_TEMPLATE %
+                             (commit_message, commit_subject))
+
+    commit_description = commit_message.split(commit_subject, 1)[1].lstrip()
+    return commit_subject, commit_description
 
 
 def user_choice_from_list(choices, pre_prompt_message, input_message,
@@ -360,7 +424,7 @@ def get_commits(base_commit, head_commit):
     return commits
 
 
-def get_user_commit_message(base_commit, head_commit, remote_branch=None):
+def get_user_commit_message_parts(base_commit, head_commit, remote_branch=None):
     """Allows a user to choose a commit message for a patch set.
 
     If there have been no commits between base_commit and head_commit, then
@@ -377,15 +441,22 @@ def get_user_commit_message(base_commit, head_commit, remote_branch=None):
             review is compared against. Defaults to None.
 
     Returns:
-        String containing the message chosen by the user. If there have been
-            no commits since the last review, returns None.
+        Tuple of string containing the commit subject and remaining description
+            as strings. This pair will have been chosen by the user.
+
+    Raises:
+        GitRvException: If there have been no commits since the last review.
     """
     commits = get_commits(base_commit, head_commit)
     if len(commits) == 0:
-        return
+        raise GitRvException(NO_COMMIT_TEMPLATE % (base_commit,))
 
-    subjects = [get_commit_subject(commit_hash=commit_hash)
-                for commit_hash in commits]
+    commit_choices = {}
+    for commit_hash in commits:
+        commit_message_parts = get_commit_message_parts(commit_hash=commit_hash)
+        single_value = '\n\n'.join(commit_message_parts)
+        # Uniqueness is not an issue, since we only care about values.
+        commit_choices[single_value] = commit_message_parts
 
     error_message_none = 'This error should never occur.'
     if remote_branch is None:
@@ -393,9 +464,10 @@ def get_user_commit_message(base_commit, head_commit, remote_branch=None):
     else:
         pre_prompt_message = MESSAGE_PROMPT_PRE_REVIEW_TEMPLATE % remote_branch
 
-    return user_choice_from_list(subjects, pre_prompt_message,
-                                 MESSAGE_CHOICE_PROMPT, error_message_none,
-                                 INVALID_MESSAGE_CHOICE)
+    commit_choice = user_choice_from_list(
+            commit_choices.keys(), pre_prompt_message, MESSAGE_CHOICE_PROMPT,
+            error_message_none, INVALID_MESSAGE_CHOICE)
+    return commit_choices[commit_choice]
 
 
 def get_remote():
@@ -1034,10 +1106,11 @@ class ReviewInfo(_UpdateInfoBase):
     Will ensure that issue can't be changed once set.
     """
 
-    _properties = ('issue', 'description', 'last_commit')
+    _properties = ('issue', 'subject', 'description', 'last_commit')
 
     issue = simple_update_property('_issue', can_change=False,
                                    type_cast_method=_int_type_cast)
+    subject = simple_update_property('_subject', can_change=True)
     description = simple_update_property('_description', can_change=True)
     last_commit = simple_update_property('_last_commit', can_change=True,
                                          type_cast_method=_hash_type_cast)
@@ -1372,7 +1445,12 @@ def update_rietveld_metadata_from_issue(current_branch=None,
         SUBJECT in issue_metadata):
         rietveld_info.reviewers = issue_metadata[REVIEWERS]
         rietveld_info.cc = issue_metadata[CC]
-        review_info.description = issue_metadata[SUBJECT]
+        review_info.subject = issue_metadata[SUBJECT]
+        if ISSUE_DESCRIPTION in issue_metadata:
+            if issue_metadata[ISSUE_DESCRIPTION] != review_info.subject:
+                review_info.description = issue_metadata[ISSUE_DESCRIPTION]
+            else:
+                review_info.description = ''
         rietveld_info.save()
         success = True
 

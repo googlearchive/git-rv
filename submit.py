@@ -37,6 +37,8 @@ class SubmitAction(object):
         __branch: The current branch when the action begins.
         __issue: Integer; containing the ID of the code review issue
             corresponding to the current branch.
+        __subject: String; subject of the issue that was uploaded with the code
+            review.
         __description: String; description of the issue that was uploaded
             with the code review.
         __server: String; the server used for review of the issue in the current
@@ -178,6 +180,7 @@ class SubmitAction(object):
                 rietveld_info=self.__rietveld_info)
         if success:
             # TODO(dhermes): This assumes rietveld_info.review_info is not None.
+            self.__subject = rietveld_info.review_info.subject
             self.__description = rietveld_info.review_info.description
             self.state = self.ENTER_DETACHED_STATE
         else:
@@ -302,7 +305,12 @@ class SubmitAction(object):
         next_state_kwargs = {}
 
         # Commit the current content
+        description_newline = ''
+        if self.__description:
+            description_newline = '\n\n'
         final_commit_message = utils.SQUASH_COMMIT_TEMPLATE % {
+            utils.SUBJECT: self.__subject,
+            utils.DESCRIPTION_NEWLINE: description_newline,
             utils.ISSUE_DESCRIPTION: self.__description,
             utils.ISSUE: self.__issue,
             utils.SERVER: self.__server,
@@ -474,7 +482,7 @@ class SubmitAction(object):
                 utils.MESSAGE: message,
                 utils.CC: self.__rietveld_info.cc,
                 utils.REVIEWERS: self.__rietveld_info.reviewers,
-                utils.SUBJECT: self.__description,
+                utils.SUBJECT: self.__subject,
             }
             publish_request_values.update(utils.PUBLISH_ISSUE_BASE)
             publish_request_body = urllib.urlencode(publish_request_values)

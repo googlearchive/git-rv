@@ -34,11 +34,13 @@ class ExportAction(object):
         __branch: The current branch when the action begins.
         __current_head: The HEAD commit in the current branch.
         __rietveld_info: RietveldInfo object associated with the current branch.
-        __message_overridden: Boolean indicating whether the git commit message
-            for the change being exported was overridden by a command line
-            argument.
-        __current_message: The value passed in from the command line or inferred
-            from the actual commit being exported.
+        __commit_message_overridden: Boolean indicating whether the git commit
+            message for the change being exported was overridden by command
+            line arguments.
+        __commit_subject: The commit subject passed in from the command line or
+            inferred from the actual commit being exported.
+        __commit_description: The commit description passed in from the command
+            line or inferred from the actual commit being exported.
         __argv: A list of strings containing the actual command line arguments.
         __no_send_mail: Boolean representing whether or not --send_mail should
             be added to the upload.py call.
@@ -61,8 +63,8 @@ class ExportAction(object):
 
     # TODO(dhermes): Make sure things can be re-wound?
     #                Final vs. in-progress in metadata.
-    def __init__(self, current_branch, args, current_message=None,
-                 no_send_mail=False, argv=None):
+    def __init__(self, current_branch, args, commit_subject=None,
+                 commit_description=None, no_send_mail=False, argv=None):
         """Constructor for ExportAction.
 
         Saves some environment data on the object such as the current branch and
@@ -71,9 +73,14 @@ class ExportAction(object):
         Args:
             current_branch: String; containing the name of a branch.
             args: An argparse.Namespace object to extract parameters from.
-            current_message: The message for the given review export. Defaults
-                to None, in which case the git commit message of the most recent
-                commit is used.
+            commit_subject: The title for a commit message for the given review
+                export. Defaults to None, in which case the git commit message
+                of the most recent commit is used (or the user is allowed to
+                pick one among the commits since last export).
+            commit_description: The description for a commit message for the
+                given review export. Defaults to None, in which case the git
+                commit message of the most recent commit is used (or the user
+                is allowed to pick one among the commits since last export).
             no_send_mail: Boolean representing whether or not --send_mail should
                 be added to the upload.py call.
             argv: The original command line arguments that were parsed to create
@@ -94,8 +101,18 @@ class ExportAction(object):
 
         self.__rietveld_info.save()
 
-        self.__message_overridden = current_message is not None
-        self.__current_message = self.__get_current_message(current_message)
+        # TODO(dhermes): Should we check if the subject is Truth-y?
+        if (commit_subject is None) ^ (commit_description is None):
+            raise GitRvException('Subject and description must either both be '
+                                 'specified or both be left out.')
+
+        # Only need to check commit_subject since above also guarantees that
+        # commit_description will also be non-null.
+        self.__commit_message_overridden = commit_subject is not None
+        commit_subject, commit_description = self.__get_commit_message_parts(
+            commit_subject, commit_description)
+        self.__commit_subject = commit_subject
+        self.__commit_description = commit_description
         self.__argv = argv
         self.__no_send_mail = no_send_mail
         self.state = self.STARTING
@@ -116,21 +133,28 @@ class ExportAction(object):
         if args.reviewers is not None:
             self.__rietveld_info.reviewers = args.reviewers
 
-    def __get_current_message(self, current_message):
-        """Gets a message for the current patch set.
+    def __get_commit_message_parts(self, commit_subject, commit_description):
+        """Gets commit subject and description for the current patch set.
 
-        If the current message passed in is not None, uses that. Otherwise uses
+        If the current message passed in is not None, uses that. Otherwise asks
+        the prompts the user to choose from the local commits.
+
+        NOTE: This assumes commit_subject and commit_description are either both
+        null or both strings and leaves it up to the caller to check.
 
         Args:
-            current_message: The message for the given review export. This will
-                be from the constructor, where it defaults to None.
+            commit_subject: String containing the commit subject. This will be
+                from the constructor, where it defaults to None.
+            commit_description: String containing the commit description. This
+                will be from the constructor, where it defaults to None.
 
         Returns:
-            String containing the message chosen by the user. If there have been
-                no commits since the last review, returns None.
+            Tuple of string containing the commit subject and remaining
+                description as strings. This pair will have been chosen by
+                the user.
         """
-        if current_message is not None:
-            return current_message
+        if commit_subject is not None:
+            return commit_subject, commit_description
 
         if self.__rietveld_info.review_info is None:
             # RemoteInfo always populated in callback()
@@ -140,8 +164,8 @@ class ExportAction(object):
             remote_branch = None
             last_commit = self.__rietveld_info.review_info.last_commit
 
-        return utils.get_user_commit_message(last_commit, self.__current_head,
-                                             remote_branch=remote_branch)
+        return utils.get_user_commit_message_parts(
+                last_commit, self.__current_head, remote_branch=remote_branch)
 
     @classmethod
     def callback(cls, args, argv):
@@ -173,12 +197,24 @@ class ExportAction(object):
         # send mail. Similarly if --no_mail is set, we should not send mail.
         no_send_mail = args.no_mail or args.send_patch
 
-        current_message = args.message
-        if current_message is not None:
-            if len(current_message) != 1:
-                raise GitRvException('Message parsing failed unexpectedly.')
-            current_message = current_message[0]
-        return cls(current_branch, args, current_message=current_message,
+        # Rietveld treats an empty string the same as if the value
+        # was never set.
+        if args.message and not args.title:
+            raise GitRvException('A patch description can only be set if it '
+                                 'also has a title.')
+
+        commit_subject = commit_description = None
+        if args.title:
+            if len(args.title) > 100:
+                raise GitRvException(utils.SUBJECT_TOO_LONG_TEMPLATE %
+                                     (args.title,))
+            # If args.message is '', then both the Title and Description
+            # will take the value of the title.
+            commit_subject = args.title
+            commit_description = args.message or ''
+
+        return cls(current_branch, args, commit_subject=commit_subject,
+                   commit_description=commit_description,
                    no_send_mail=no_send_mail, argv=argv)
 
     def assess_review(self):
@@ -236,8 +272,9 @@ class ExportAction(object):
             command_args.append(utils.ISSUE_ARG_TEMPLATE % (issue,))
 
         # Add the message if it wasn't overridden
-        if not self.__message_overridden:
-            command_args.extend(['-m', self.__current_message])
+        if not self.__commit_message_overridden:
+            command_args.extend(['-t', self.__commit_subject,
+                                 '-m', self.__commit_description])
 
         # Make sure to execute upload.py
         command_args.insert(0, 'upload.py')
@@ -252,7 +289,9 @@ class ExportAction(object):
         """
         issue = self.__upload_dot_py()
         self.state = self.UPDATING_METADATA
-        self.advance(issue=issue, initial_message=self.__current_message)
+        self.advance(issue=issue,
+                     initial_subject=self.__commit_subject,
+                     initial_description=self.__commit_description)
 
     def update_issue(self):
         """Updates an existing issue.
@@ -264,7 +303,7 @@ class ExportAction(object):
             print 'You have made no commits since your last export.'
             print 'Exporting now will upload an empty patch, but may'
             print 'update your metadata.'
-            answer = raw_input('Would like to upload to Rietveldd?(y/N) ')
+            answer = raw_input('Would like to upload to Rietveld?(y/N) ')
             do_upload = (answer.strip() == 'y')
 
         # TODO(dhermes): Use different mechanism than upload if there are
@@ -274,22 +313,34 @@ class ExportAction(object):
         self.state = self.UPDATING_METADATA
         self.advance()
 
-    def update_metadata(self, issue=None, initial_message=None):
+    def update_metadata(self, issue=None, initial_subject=None,
+                        initial_description=None):
         """Updates the Rietveld metadata associated with the current branch.
 
         If successful, sets state to FINISHED and advances the state machine.
 
+        NOTE: This assumes initial_subject and initial_description are either
+        both null or both strings and leaves it up to the caller to check.
+
         Args:
             issue: Integer; containing an ID of a code review issue.
-            initial_message: String; the commit message used when creating a new
-                issue via upload.py.
+            initial_subject: String containing the commit subject. Used when
+                creating a new issue via upload.py. Defaults to None.
+            initial_description: String containing the commit description. Used
+                when creating a new issue via upload.py. Defaults to None.
         """
         review_info = utils.ReviewInfo(last_commit=self.__current_head)
         # TODO(dhermes): Throw exception if one of these is None while the
         #                the other isn't?
-        if issue is not None and initial_message is not None:
+        if issue is not None and initial_subject is not None:
             review_info.issue = issue
-            review_info.description = initial_message
+            review_info.subject = initial_subject
+
+            if initial_description != initial_subject:
+                review_info.description = initial_description
+            else:
+                review_info.description = ''
+
         self.__rietveld_info.review_info = review_info
         self.__rietveld_info.save()
 
