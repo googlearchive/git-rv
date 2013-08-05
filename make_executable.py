@@ -61,6 +61,19 @@ def get_full_path(module, project_root=None):
     return module + '.py'
 
 
+def compile_source(full_path):
+    current_directory = os.getcwd()
+    try:
+        directory, relative_path = os.path.split(full_path)
+        if not os.path.isdir(directory):
+            raise OSError('Can\'t compile %r.' % (full_path,))
+        os.chdir(directory)
+        compile_args = COMPILE_ARGS + [relative_path]
+        subprocess.call(compile_args)
+    finally:
+        os.chdir(current_directory)
+
+
 def check_upload_py_exists(project_root):
     full_path = get_full_path(UPLOAD_PY_PATH, project_root)
     if not os.path.isfile(full_path):
@@ -83,8 +96,7 @@ def create_zipfile():
             target_path = get_full_path(target_module) + 'o'
 
             # Compile the module
-            compile_args = COMPILE_ARGS + [source_path]
-            subprocess.call(compile_args)
+            compile_source(source_path)
             print 'Writing %s to git-rv executable.' % (target_path,)
             compiled_source_path = source_path + 'o'
             git_rv_zip.write(compiled_source_path, arcname=target_path)
