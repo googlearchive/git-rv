@@ -43,6 +43,10 @@ class SyncAction(object):
     Attributes:
         __continue: Boolean indicating whether or not this SyncAction is
             continuing or starting fresh.
+        __export_action_args: Parsed argparse.Namespace modified to be passed in
+            to ExportAction.callback.
+        __export_action_argv: Command line arguments modified to be passed in to
+            ExportAction.callback.
         __branch: String; containing the name of the current branch.
         __rietveld_info: RietveldInfo object associated with current branch.
         __last_commit: String containing the hash of the last commit that
@@ -64,17 +68,25 @@ class SyncAction(object):
     CLEAN_UP = 7
     FINISHED = 8
 
-    def __init__(self, in_continue):
+    def __init__(self, in_continue, export_action_args, export_action_argv):
         """Constructor for SyncAction.
 
         Args:
             in_continue: Boolean indicating whether or not this SyncAction is
                 continuing or starting fresh.
+            export_action_args: Parsed argparse.Namespace modified to be passed
+                in to ExportAction.callback.
+            export_action_argv: Command line arguments modified to be passed in
+                to ExportAction.callback.
         """
         self.__continue = in_continue
         self.__branch = utils.get_current_branch()
         self.__rietveld_info = utils.RietveldInfo.from_branch(
                 branch_name=self.__branch)
+        export_action_args.server = self.__rietveld_info.server
+        export_action_args.private = self.__rietveld_info.private
+        self.__export_action_args = export_action_args
+        self.__export_action_argv = export_action_argv
         # Make sure we have review data
         if self.__rietveld_info is None:
             print 'There is no review data for branch %r.' % (self.__branch,)
@@ -84,19 +96,66 @@ class SyncAction(object):
         self.advance()
 
     @classmethod
-    def callback(cls, args, unused_argv):
+    def callback(cls, args, argv):
         """A callback to begin a SyncAction after arguments are parsed.
 
         Args:
             args: An argparse.Namespace object parsed from the command line.
-            unused_argv: The original command line arguments that were parsed
-                to create args. These are unused.
+            argv: The original command line arguments that were parsed to create
+                args.
 
         Returns:
             An instance of SyncAction. Just by creating a new instance,
                 the state machine will begin working.
         """
-        return cls(in_continue=args.in_continue)
+        in_continue = args.in_continue
+
+        # Prepare args to be passed to ExportAction.callback
+        args = cls.__clean_args_for_export(args)
+
+        # Prepare argv to be passed to ExportAction.callback
+        if argv[0] != utils.SYNC:
+            raise GitRvException('SyncAction created by method other than '
+                                 'git-rv sync.')
+        argv[0] = utils.EXPORT  # Change to export to be passed to ExportAction
+        if in_continue:
+            # Unfortunately, an argparse.Namespace object doesn't have a good
+            # way to convert back to a list of strings, so we need to manually
+            # remove any instance(s) of --continue from the string list of args
+            # that is eventually passed to upload.py (upload.py would fail if it
+            # received --continue or any variant).
+            #
+            # If at some point the sync subparser has another option beginning
+            # with '--c', this code would also filter those out, which is not
+            # the intention of this list comprehension. If that were to occur,
+            # this code should be changed to address that possibility.
+            argv = [value for value in argv if not value.startswith('--c')]
+
+        return cls(in_continue=in_continue, export_action_args=args,
+                   export_action_argv=argv)
+
+    @staticmethod
+    def __clean_args_for_export(args):
+        """Cleans an argparse.Namespace object to be passed along to export.
+
+        In the case of a successful sync locally, the newly created sync commit
+        needs to be exported via an ExportAction so we pass along many arguments
+        and add the ones required by ExportAction that are intentionally not
+        supported in sync.
+
+        Args:
+            args: An argparse.Namespace object parsed from the command line.
+
+        Returns:
+            An instance of SyncAction. Just by creating a new instance,
+                the state machine will begin working.
+        """
+        del args.in_continue
+        args.message = args.title = args.cc = args.reviewers = None
+        args.send_patch = False
+        # server and private will be set in __init__ after RietveldInfo
+        # is retrieved.
+        return args
 
     def check_environment(self):
         """Checks that a sync can be performed.
@@ -244,16 +303,10 @@ class SyncAction(object):
         self.__rietveld_info.save()
 
         print 'Exporting synced changes.'
-        # TODO(dhermes): Do something more clear cut or fix ExportAction to have
-        #                better defaults.
-        # We have to lie about args, argv so ExportAction doesn't get mad
-        fake_namespace = argparse.Namespace(
-                server=self.__rietveld_info.server,
-                private=self.__rietveld_info.private,
-                cc=None, host=None, reviewers=None)
         # This will fully run the ExportAction since the state machine calls
         # self.advance() in the constructor.
-        action = ExportAction(self.__branch, fake_namespace, argv=['export'])
+        action = ExportAction.callback(self.__export_action_args,
+                                       self.__export_action_argv)
         # Need to update the newly changed RietveldInfo in case clean_up has
         # to call remove_key using the currently set RietveldInfo.
         self.__rietveld_info = action.rietveld_info

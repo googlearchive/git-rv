@@ -112,7 +112,7 @@ class SubmitAction(object):
 
     @classmethod
     def callback(cls, args, unused_argv):
-        """A callback to begin an ExportAction after arguments are parsed.
+        """A callback to begin a SubmitAction after arguments are parsed.
 
         Args:
             args: An argparse.Namespace object to extract parameters from.

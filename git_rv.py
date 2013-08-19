@@ -38,6 +38,8 @@ import utils
 EMAIL_OPTION = '-e'
 DISCARDED_UPLOAD_OPTIONS = ['file', 'email', 'help', utils.ISSUE, 'revision',
                             'save_cookies', 'send_mail', 'use_oauth2', 'vcs']
+REVIEW_SERVER_IGNORED_OPTIONS = [utils.SERVER, 'email',
+                                 'save_cookies', 'use_oauth2']
 STRING_TO_TYPE_MAP = {
     'string': str,
     'int': int,
@@ -205,20 +207,23 @@ def get_parser():
     parser_rm_branch.add_argument('branch',
                                   help='Name of branch to delete.')
 
+    # Review server option group for submit and sync
+    review_server_option_group = UPLOAD_PARSER.get_option_group(EMAIL_OPTION)
+    if review_server_option_group.title != REVIEW_SERVER_OPTIONS:
+        raise GitRvException('Unexpected option group for parser. Email option '
+                             'contained in %r group, expected to be in %r '
+                             'group.' % (review_server_option_group.title,
+                                         REVIEW_SERVER_OPTIONS))
+
     # Submit
     parser_submit = subparsers.add_parser(
             utils.SUBMIT, help='Submit reviewed changes to remote repository.')
     parser_submit.set_defaults(callback=SubmitAction.callback)
 
     # Add review server option subgroup for closing issues
-    option_group = UPLOAD_PARSER.get_option_group(EMAIL_OPTION)
-    if option_group.title != REVIEW_SERVER_OPTIONS:
-        raise GitRvException('Unexpected option group for parser. Email option '
-                             'contained in %r group, expected to be in %r '
-                             'group.' % (option_group.title,
-                                         REVIEW_SERVER_OPTIONS))
-    _copy_optparse_option_group(option_group, parser_submit,
-                                ignored_destinations=[utils.SERVER])
+    _copy_optparse_option_group(
+            review_server_option_group, parser_submit,
+            ignored_destinations=REVIEW_SERVER_IGNORED_OPTIONS)
 
     # Add argument(s) unique to submit
     parser_submit.add_argument('--leave_open', action='store_false',
@@ -233,8 +238,16 @@ def get_parser():
     parser_sync = subparsers.add_parser(utils.SYNC, help=sync_help)
     parser_sync.set_defaults(callback=SyncAction.callback)
 
+    # Add review server option subgroup for sync
+    _copy_optparse_option_group(
+            review_server_option_group, parser_sync,
+            ignored_destinations=REVIEW_SERVER_IGNORED_OPTIONS)
+
+    # Add argument(s) unique to sync
     parser_sync.add_argument('--continue', action='store_true',
                              dest='in_continue',
                              help='Continue sync after resolving conflicts.')
+    parser_sync.add_argument('--no_mail', action='store_true', dest='no_mail',
+                             help='Don\'t send e-mail for this sync.')
 
     return parser
