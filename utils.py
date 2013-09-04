@@ -299,7 +299,7 @@ def get_commit_subject(commit_hash):
         String containing the subject (first line) of the commit.
     """
     return capture_command('git', 'log', '-s', '-1',
-                           '--pretty=%s', '-U', commit_hash)
+                           '--pretty=%s', commit_hash)
 
 
 def get_commit_message(commit_hash):
@@ -313,7 +313,7 @@ def get_commit_message(commit_hash):
         String containing the full commit message.
     """
     return capture_command('git', 'log', '-s', '-1', '--pretty=format:%B',
-                           '-U', commit_hash, single_line=False)
+                           commit_hash, single_line=False)
 
 
 def get_commit_message_parts(commit_hash=None, current_branch=None):
