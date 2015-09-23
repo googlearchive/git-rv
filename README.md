@@ -1,10 +1,9 @@
-`git-rv`
-========
-
 ![status: inactive](https://img.shields.io/badge/status-inactive-red.svg)
 
 This project is no longer actively developed or maintained.  
 
+`git-rv`
+========
 
 `git-rv` is a command line tool for syncing local git clients with code
 reviews hosted on a [Rietveld][rietveld] code review server such as
